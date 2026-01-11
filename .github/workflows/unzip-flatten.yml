@@ -1,0 +1,110 @@
+name: Unzip Files and Flatten Repo
+
+on:
+  push:
+    paths:
+      - '**.zip'
+
+jobs:
+  unzip-and-flatten:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Save workflow file
+        run: |
+          mkdir -p /tmp/workflow-backup
+          if [ -f .github/workflows/unzip-flatten.yml ]; then
+            cp .github/workflows/unzip-flatten.yml /tmp/workflow-backup/
+            echo "WORKFLOW_EXISTS=true" >> $GITHUB_ENV
+          else
+            echo "WORKFLOW_EXISTS=false" >> $GITHUB_ENV
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Restore workflow file
+        if: env.WORKFLOW_EXISTS == 'true'
+        run: |
+          mkdir -p .github/workflows
+          cp /tmp/workflow-backup/unzip-flatten.yml .github/workflows/
+
+      - name: Extract ZIP files and flatten structure
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r -d '' zip_file; do
+            echo "Processing: $zip_file"
+
+            TEMP_DIR=$(mktemp -d)
+            trap "rm -rf '$TEMP_DIR'" EXIT
+
+            unzip -o -q "$zip_file" -d "$TEMP_DIR"
+
+            cd "$TEMP_DIR"
+
+            if [ "$(find . -maxdepth 1 -type f | wc -l)" -gt 0 ]; then
+              cd "$OLDPWD"
+              cp -r "$TEMP_DIR"/* .
+            else
+              FIRST_LEVEL_DIRS=$(find . -maxdepth 1 -type d | tail -n +2)
+
+              if [ "$(echo "$FIRST_LEVEL_DIRS" | wc -l)" -eq 1 ]; then
+                TOP_DIR=$(find . -maxdepth 1 -type d | tail -n +2 | head -1)
+                cd "$OLDPWD"
+                cp -r "$TEMP_DIR/$TOP_DIR"/* .
+              else
+                cd "$OLDPWD"
+                cp -r "$TEMP_DIR"/*/ .
+              fi
+            fi
+
+            rm -f "$zip_file"
+            echo "Completed: $zip_file"
+
+          done < <(find . -maxdepth 1 -type f -name "*.zip" -print0)
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Check for changes
+        id: git-status
+        run: |
+          if git status --porcelain | grep -q .; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push changes
+        if: steps.git-status.outputs.has_changes == 'true'
+        run: |
+          git add -A
+          git commit -m "Extract and flatten ZIP contents - $(date '+%Y-%m-%d %H:%M:%S')"
+          git push
+
+      - name: No changes to commit
+        if: steps.git-status.outputs.has_changes == 'false'
+        run: |
+          echo "No files to process"
+
+      - name: Delete workflow file
+        if: always() && env.WORKFLOW_EXISTS == 'true'
+        run: |
+          git rm -f --cached .github/workflows/unzip-flatten.yml 2>/dev/null || true
+          rm -f .github/workflows/unzip-flatten.yml
+          git add -A
+          git commit -m "Remove self-destructing workflow" || echo "No commit needed"
+          git push || echo "No push needed"
+
+      - name: Cleanup backup
+        if: always()
+        run: |
+          rm -rf /tmp/workflow-backup
