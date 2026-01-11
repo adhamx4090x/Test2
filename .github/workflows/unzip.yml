@@ -16,24 +16,30 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Unzip and flatten project
+      - name: Unzip and flatten project safely
         run: |
           set -e
-
           find . -maxdepth 1 -type f -name "*.zip" | while read zip; do
-            echo "Extracting $zip"
-
             unzip -o "$zip"
-
             ROOT_DIR=$(unzip -Z -1 "$zip" | head -1 | cut -d/ -f1)
-
             if [ -d "$ROOT_DIR" ]; then
-              echo "Moving contents of $ROOT_DIR to repo root"
               shopt -s dotglob
-              mv "$ROOT_DIR"/* .
+              EXCLUDE_FOLDERS=".github .git"
+              for f in "$ROOT_DIR"/*; do
+                base=$(basename "$f")
+                skip=false
+                for ex in $EXCLUDE_FOLDERS; do
+                  if [ "$base" = "$ex" ]; then
+                    skip=true
+                    break
+                  fi
+                done
+                if [ "$skip" = false ]; then
+                  mv "$f" .
+                fi
+              done
               rm -rf "$ROOT_DIR"
             fi
-
             rm "$zip"
           done
 
@@ -41,11 +47,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           if git status --porcelain | grep .; then
             git add -A
             git commit -m "Initial project import (auto-unzip)"
             git push
           else
             echo "No changes to commit"
-          fi
